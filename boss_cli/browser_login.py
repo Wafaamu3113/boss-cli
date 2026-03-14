@@ -1,4 +1,4 @@
-"""Browser-assisted QR login via Camoufox.
+"""Browser-assisted login enhancement via Camoufox.
 
 Hybrid approach:
 1. Complete the QR login flow via HTTP (httpx) to obtain session cookies
@@ -8,6 +8,10 @@ Hybrid approach:
 3. Export all cookies from the browser context.
 
 This gives us the complete cookie set that pure HTTP cannot achieve.
+
+NOTE: Boss Zhipin uses aggressive anti-bot detection that may prevent
+``__zp_stoken__`` generation even in Camoufox.  The QR login still
+works without it for most APIs (recommend, chat, applied, etc.).
 """
 
 from __future__ import annotations
@@ -37,8 +41,7 @@ def _ensure_camoufox_ready() -> None:
         import camoufox  # noqa: F401
     except ImportError as exc:
         raise BrowserLoginUnavailable(
-            "Browser-assisted QR login requires the `camoufox` package.\n"
-            "Install it with: pip install 'kabi-boss-cli[browser]'"
+            "camoufox 未安装。安装: pip install 'kabi-boss-cli[browser]'"
         ) from exc
 
     try:
@@ -50,12 +53,12 @@ def _ensure_camoufox_ready() -> None:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise BrowserLoginUnavailable(
-            "Unable to validate the Camoufox browser installation."
+            "无法验证 Camoufox 浏览器安装状态。"
         ) from exc
 
     if result.returncode != 0 or not result.stdout.strip():
         raise BrowserLoginUnavailable(
-            "Camoufox browser runtime is missing. Run `python -m camoufox fetch` first."
+            "Camoufox 浏览器运行时缺失。运行: python -m camoufox fetch"
         )
 
 
@@ -78,8 +81,11 @@ def _hydrate_stoken_via_browser(cookies: dict[str, str]) -> dict[str, str]:
     """Inject session cookies into a Camoufox browser and harvest __zp_stoken__.
 
     Boss Zhipin's client-side JS generates __zp_stoken__ on page load.
-    We open a headless browser with the session cookies already set, visit
-    the site, and let JS run naturally.
+    We open a browser with the session cookies already set, visit the
+    site, and let JS run.
+
+    NOTE: This may fail if the anti-bot JS fingerprints the browser
+    environment and refuses to generate the token.
     """
     from camoufox.sync_api import Camoufox
 
@@ -100,16 +106,14 @@ def _hydrate_stoken_via_browser(cookies: dict[str, str]) -> dict[str, str]:
         try:
             page.goto(f"{BASE_URL}/", wait_until="networkidle", timeout=20_000)
         except Exception:
-            # networkidle may timeout, but cookies may still be set
             logger.debug("Camoufox page load did not reach networkidle")
 
-        # Give JS a moment to set cookies
+        # Give JS time to set cookies
         try:
             page.wait_for_timeout(3000)
         except Exception:
             pass
 
-        # Export all cookies
         result = _normalize_browser_cookies(context.cookies())
 
     return result
@@ -122,9 +126,8 @@ def browser_qr_login(
     """Hybrid QR login: HTTP for session + Camoufox for __zp_stoken__.
 
     1. Run the standard HTTP QR login flow (user scans in terminal)
-    2. If __zp_stoken__ is missing, use a headless Camoufox browser
-       with the session cookies to let JS generate it
-    3. Return the complete credential
+    2. If __zp_stoken__ is missing, try headless Camoufox to generate it
+    3. Return the credential (complete or partial)
     """
     _ensure_camoufox_ready()
 
@@ -137,7 +140,7 @@ def browser_qr_login(
     # Step 1: Complete QR login via HTTP (reuse existing flow)
     cred = asyncio.run(qr_login())
 
-    # Step 2: If __zp_stoken__ is missing, hydrate via browser
+    # Step 2: If __zp_stoken__ is missing, try to hydrate via browser
     if "__zp_stoken__" not in cred.cookies:
         _emit("\n🔧 正在通过浏览器补全 __zp_stoken__...")
 
@@ -145,18 +148,16 @@ def browser_qr_login(
             enriched = _hydrate_stoken_via_browser(cred.cookies)
         except Exception as exc:
             logger.warning("Browser __zp_stoken__ hydration failed: %s", exc)
-            _emit("[yellow]⚠️  浏览器补全 __zp_stoken__ 失败，部分接口可能不可用[/yellow]")
+            _emit("⚠️  浏览器补全 __zp_stoken__ 失败")
             return cred
 
         if "__zp_stoken__" in enriched:
-            # Merge: keep all original cookies, add browser-enriched ones
             merged = {**cred.cookies, **enriched}
             cred = Credential(cookies=merged)
             save_credential(cred)
-            _emit("✅ __zp_stoken__ 补全成功！")
+            _emit("✅ __zp_stoken__ 补全成功！所有接口可正常使用")
         else:
-            _emit("⚠️  浏览器未能生成 __zp_stoken__，部分接口可能返回「环境异常」")
-    else:
-        _emit("✅ 已获取完整 cookies（含 __zp_stoken__）")
+            _emit("⚠️  浏览器未能生成 __zp_stoken__（Boss 直聘反爬检测）")
+            _emit("   recommend/chat/applied 等接口仍可使用，search 可能受限")
 
     return cred
