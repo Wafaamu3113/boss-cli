@@ -162,7 +162,19 @@ Saved cookies auto-refresh from browser after **7 days**. If browser refresh fai
 
 boss-cli ships with a [`SKILL.md`](./SKILL.md) that teaches AI agents how to use it.
 
-### Claude Code / Antigravity
+### [Skills CLI](https://github.com/vercel-labs/skills) (Recommended)
+
+```bash
+npx skills add jackwener/boss-cli
+```
+
+| Flag | Description |
+| --- | --- |
+| `-g` | Install globally (user-level, shared across projects) |
+| `-a claude-code` | Target a specific agent |
+| `-y` | Non-interactive mode |
+
+### Manual Install
 
 ```bash
 mkdir -p .agents/skills
